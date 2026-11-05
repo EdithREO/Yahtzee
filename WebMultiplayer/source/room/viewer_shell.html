@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#183d31}canvas{display:block;width:100%;height:100%}#status{position:absolute;color:white;left:12px;top:12px;font:14px sans-serif}</style>$GODOT_HEAD_INCLUDE</head><body><canvas id="canvas" tabindex="0"></canvas><div id="status">Loading dice viewer…</div><script src="$GODOT_URL"></script><script>
+const config=$GODOT_CONFIG;
+// Keep Godot's Web audio driver; browser input unlocks AudioContext.
+const engine=new Engine(config);
+// Single-threaded Web audio uses Sample playback; WebGL2 and Fetch are required.
+if(!Engine.isWebGLAvailable(2)||!Engine.isFetchAvailable())document.getElementById('status').textContent='WebGL2 and Fetch are required';
+else engine.startGame().then(()=>document.getElementById('status').remove()).catch(err=>{document.getElementById('status').textContent=String(err);console.error(err);});
+</script></body></html>

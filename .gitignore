@@ -1,0 +1,18 @@
+# Godot editor cache and local state
+.godot/
+.import/
+export_credentials.cfg
+
+# Build outputs and logs
+build_logs/
+/SinglePlayer/Windows/
+/WebMultiplayer/public/viewer/
+*.log
+
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+.cpolar/
+*.pem
+*.key

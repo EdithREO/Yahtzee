@@ -1,0 +1,16 @@
+config_version=5
+[application]
+config/name="快艇骰子 · 双人对战"
+run/main_scene="res://room/trajectory_view.tscn"
+run/main_scene.trajectory="res://room/trajectory_view.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+[display]
+window/size/viewport_width=1440
+window/size/viewport_height=900
+window/size/window_width_override=1200
+window/size/window_height_override=750
+window/stretch/mode="canvas_items"
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
