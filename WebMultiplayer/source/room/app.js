@@ -28,6 +28,14 @@ window.yachtUiAction=(type,index=-1)=>{
   if(game?.selected_skills?.[seat]==='biohazard' && !game.skill_used[seat] && game.rolls<2) action(type,{index});
   return;
  }
+ if(type==='use_rescue'){
+  if(game?.selected_skills?.[seat]==='rescue' && !game.skill_used[seat] && game.rolls>0) action(type,{index});
+  return;
+ }
+ if(type==='set_rescue_discard'){
+  if(game?.rescue_value>0 && game.rolls>0) action(type,{index});
+  return;
+ }
  if(type==='restart_request'||type==='restart_reply'){
   if(!game?.skills_ready||game.busy||pending)return;
   requestSequence++;sessionStorage.setItem('yacht_request_seq',String(requestSequence));pending=true;
@@ -114,7 +122,7 @@ function updateControls(){
  const active=canAct(); $('roll').disabled=!active || game?.rolls>=(game?.roll_limit??3) || game?.held.every(Boolean);
  $('roll').textContent=!window.yachtViewerReady?'正在加载骰盘…':(game?.busy||rolling)?'投掷中…':game?.current_player===seat?'投骰':'观看对方投骰';
  for(let i=0;i<5;i++) $('hold'+i).disabled=!active || !game?.values[i];
- const canScore=active && game.rolls>0 && !game.values.includes(0);
+ const canScore=active && game.rolls>0 && !game.values.includes(0) && (!(game.rescue_value>0) || game.rescue_discard>=0);
  $('commit').disabled=!canScore || $('category').value===''; $('category').disabled=!canScore;
 }
 function sendGameRequest(type,extra){

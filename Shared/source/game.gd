@@ -5,6 +5,8 @@ var stack_assist = preload("res://room/dice_stack_assist.gd").new()
 const CAT := YachtRules.CATEGORIES
 const MatchSkills = preload("res://match_skills.gd")
 const D4Dice = preload("res://room/d4_dice.gd")
+const RescueDie = preload("res://room/rescue_die.gd")
+const PICK_RESCUE_DISCARD := "set_rescue_discard"
 const HOLD_X := 4.1
 var skills := MatchSkills.new()
 var skill_overlay: ColorRect
@@ -21,6 +23,13 @@ var dice_picker_skill := ""
 var biohazard_button: Button
 var biohazard_view: Dictionary = {}
 var biohazard_before_roll: Array = []
+var rescue_button: Button
+var rescue_discard_button: Button
+var rescue_notice: Label
+var rescue_icon: Button
+var rescue_die: DiceDie3D
+var shown_rescue_value := 0
+var shown_rescue_discard := -1
 var blackout_button: Button
 var blackout_notice: Label
 var blackout_indices: Array = []
@@ -217,6 +226,9 @@ func _setup_ui() -> void:
 	blackout_notice = _label("", 18, Color("852b28"))
 	blackout_notice.hide()
 	right.add_child(blackout_notice)
+	rescue_notice = _label("", 16, Color("245a86"))
+	rescue_notice.hide()
+	right.add_child(rescue_notice)
 	var strip := Control.new()
 	strip.custom_minimum_size.y = 96
 	right.add_child(strip)
@@ -231,6 +243,7 @@ func _setup_ui() -> void:
 	icon_strip.anchor_bottom = 1.0
 	icon_strip.offset_left = -268
 	icon_strip.offset_right = 268
+	icon_strip.grow_horizontal = Control.GROW_DIRECTION_END
 	icon_strip.add_theme_constant_override("separation",14)
 	strip.add_child(icon_strip)
 	for slot in range(5):
@@ -241,6 +254,15 @@ func _setup_ui() -> void:
 		icon.pressed.connect(_on_icon_pressed.bind(slot))
 		icon_strip.add_child(icon)
 		icons.append(icon)
+	rescue_icon = Button.new()
+	rescue_icon.custom_minimum_size = Vector2(96,96)
+	rescue_icon.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rescue_icon.add_theme_constant_override("icon_max_width",82)
+	rescue_icon.add_theme_color_override("icon_disabled_color", Color.WHITE)
+	rescue_icon.disabled = true
+	rescue_icon.focus_mode = Control.FOCUS_NONE
+	rescue_icon.hide()
+	icon_strip.add_child(rescue_icon)
 	stage_container = SubViewportContainer.new()
 	stage_container.stretch = true
 	stage_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -345,6 +367,17 @@ func _setup_dice_picker(title: HBoxContainer) -> void:
 	biohazard_button.pressed.connect(_open_dice_picker.bind(MatchSkills.BIOHAZARD))
 	biohazard_button.hide()
 	controls.add_child(biohazard_button)
+	rescue_button = _button("跨时空救援")
+	rescue_button.custom_minimum_size.y = 32
+	rescue_button.tooltip_text = "投掷后点选一颗骰子，记录它的点数"
+	rescue_button.pressed.connect(_open_dice_picker.bind(MatchSkills.RESCUE))
+	rescue_button.hide()
+	controls.add_child(rescue_button)
+	rescue_discard_button = _button("选一颗不计分")
+	rescue_discard_button.custom_minimum_size.y = 32
+	rescue_discard_button.pressed.connect(_open_dice_picker.bind(PICK_RESCUE_DISCARD))
+	rescue_discard_button.hide()
+	controls.add_child(rescue_discard_button)
 	dice_picker_actions = HBoxContainer.new()
 	dice_picker_actions.add_theme_constant_override("separation", 6)
 	dice_picker_actions.hide()
@@ -363,9 +396,17 @@ func _setup_dice_picker(title: HBoxContainer) -> void:
 	dice_picker_outline.cull_mode = BaseMaterial3D.CULL_FRONT
 
 func _open_dice_picker(skill: String) -> void:
-	var button := d4_button if skill == MatchSkills.D4 else biohazard_button
+	var button: Button
+	match skill:
+		MatchSkills.D4: button = d4_button
+		MatchSkills.BIOHAZARD: button = biohazard_button
+		MatchSkills.RESCUE: button = rescue_button
+		PICK_RESCUE_DISCARD: button = rescue_discard_button
+		_: return
 	if button.disabled or dice_picking:
 		return
+	if skill == PICK_RESCUE_DISCARD:
+		_show_rescue_discard(-1)
 	dice_picking = true
 	dice_picker_skill = skill
 	dice_picker_confirm.text = "确定（0/%d）" % _dice_picker_limit()
@@ -379,13 +420,16 @@ func _dice_picker_limit() -> int:
 func _toggle_picker_die(index: int) -> void:
 	if dice_picker_selected.has(index):
 		dice_picker_selected.erase(index)
-		_set_picker_outline(dice[index], false)
+		_set_picker_outline(_picker_die(index), false)
 	elif dice_picker_selected.size() < _dice_picker_limit():
 		dice_picker_selected.append(index)
-		_set_picker_outline(dice[index], true)
+		_set_picker_outline(_picker_die(index), true)
 	dice_picker_confirm.text = "确定（%d/%d）" % [dice_picker_selected.size(), _dice_picker_limit()]
 	dice_picker_confirm.disabled = dice_picker_selected.size() != _dice_picker_limit()
 	_refresh_stage()
+
+func _picker_die(index: int) -> DiceDie3D:
+	return rescue_die if index == MatchSkills.RESCUE_DIE_INDEX else dice[index]
 
 func _set_picker_outline(die: DiceDie3D, visible_outline: bool) -> void:
 	var visual := die.get_node("_DiceVisual") as MeshInstance3D
@@ -406,7 +450,7 @@ func _end_dice_selection() -> void:
 	if not dice_picking:
 		return
 	for index in dice_picker_selected:
-		_set_picker_outline(dice[index], false)
+		_set_picker_outline(_picker_die(index), false)
 	dice_picker_selected.clear()
 	dice_picking = false
 	dice_picker_skill = ""
@@ -423,10 +467,11 @@ func _confirm_dice_selection() -> void:
 	var skill := dice_picker_skill
 	var indices := dice_picker_selected.duplicate()
 	_end_dice_selection()
-	if skill == MatchSkills.D4:
-		_use_d4(indices)
-	else:
-		_use_biohazard(indices[0])
+	match skill:
+		MatchSkills.D4: _use_d4(indices)
+		MatchSkills.BIOHAZARD: _use_biohazard(indices[0])
+		MatchSkills.RESCUE: _use_rescue(indices[0])
+		PICK_RESCUE_DISCARD: _discard_for_rescue(indices[0])
 	_update_ui()
 
 func _render_d4_button(equipped: bool, spent: bool, available: bool) -> void:
@@ -507,7 +552,63 @@ func _roll_limit() -> int:
 	return skills.roll_limit()
 
 func _scoring_values() -> Array:
-	return MatchSkills.scoring_values(values, biohazard_view)
+	return MatchSkills.scoring_values(values, biohazard_view, skills.rescue_value, skills.rescue_discard)
+
+func _refresh_rescue() -> void:
+	var equipped := skills.skill_for(player) == MatchSkills.RESCUE
+	var can_act := not busy and not over and rolls > 0 and not values.has(0)
+	var can_record := can_act and _filled(player) < 11 and skills.can_use_rescue(player)
+	_render_rescue(equipped, skills.used_snapshot()[player], can_record, can_act, skills.rescue_value, skills.rescue_discard)
+
+func _render_rescue(equipped: bool, spent: bool, can_record: bool, can_discard: bool, value: int, discarded: int) -> void:
+	rescue_button.visible = equipped and value == 0
+	rescue_button.disabled = not can_record
+	rescue_button.text = "跨时空救援 · 已使用" if spent else "跨时空救援"
+	rescue_discard_button.visible = value > 0
+	rescue_discard_button.disabled = not can_discard
+	rescue_discard_button.text = "更换不计分的骰子" if discarded >= 0 else "选一颗不计分"
+	if (dice_picker_skill == MatchSkills.RESCUE and not can_record) or (dice_picker_skill == PICK_RESCUE_DISCARD and not can_discard):
+		_end_dice_selection()
+	if shown_rescue_value != value:
+		shown_rescue_value = value
+		RescueDie.show_value(rescue_die, value)
+		rescue_icon.visible = value > 0
+		rescue_icon.icon = load("res://pips/rescue-%d.svg" % value) if value > 0 else null
+	if value > 0:
+		var excluded := discarded == MatchSkills.RESCUE_DIE_INDEX
+		var border := Color("e43131") if excluded else Color("2874a8")
+		rescue_icon.add_theme_stylebox_override("disabled", _flat(Color(0.13, 0.56, 0.94, 0.64), 10, border, 3))
+		rescue_icon.tooltip_text = "冻结骰：%d 点%s" % [value, " · 不计分" if excluded else ""]
+	if dice_picker_skill != PICK_RESCUE_DISCARD:
+		_show_rescue_discard(discarded)
+	rescue_notice.visible = value > 0
+	if value > 0:
+		rescue_notice.text = "冻结骰：%d 点" % value
+		if discarded == MatchSkills.RESCUE_DIE_INDEX:
+			rescue_notice.text += " · 冻结骰不计分"
+		elif discarded >= 0:
+			rescue_notice.text += " · 红框骰子不计分"
+		else:
+			rescue_notice.text += " · 计分前选一颗骰子不计分"
+
+func _show_rescue_discard(index: int) -> void:
+	if shown_rescue_discard == index:
+		return
+	if shown_rescue_discard >= 0:
+		_set_picker_outline(_picker_die(shown_rescue_discard), false)
+	shown_rescue_discard = index
+	if index >= 0:
+		_set_picker_outline(_picker_die(index), true)
+
+func _use_rescue(index: int) -> void:
+	if rescue_button.disabled or not skills.use_rescue(player, values[index]).is_empty():
+		return
+	_update_ui()
+
+func _discard_for_rescue(index: int) -> void:
+	if rescue_discard_button.disabled or not skills.discard_for_rescue(index).is_empty():
+		return
+	_update_ui()
 
 func _add_totals_row(parent: VBoxContainer, text: String, out: Array[Label], strong: bool = false) -> void:
 	var row := HBoxContainer.new()
@@ -584,6 +685,10 @@ func _setup_world() -> void:
 		die.body_entered.connect(_on_die_hit.bind(die))
 		dice.append(die)
 		parked.append(Transform3D.IDENTITY)
+	rescue_die = RescueDie.create()
+	rescue_die.position = Vector3(HOLD_X, 1.1, 2.9)
+	world.add_child(rescue_die)
+	rescue_die.set_physics_process(false)
 
 func _felt_surface() -> void:
 	var instance := MeshInstance3D.new()
@@ -750,6 +855,7 @@ func _on_all_settled(_results: Dictionary) -> void:
 			return
 		values[i] = result.value
 		if not held[i]: parked[i] = dice[i].global_transform
+	skills.rescue_discard = -1
 	_set_dice_contacts(false)
 	for die in dice:
 		die.freeze = true
@@ -777,14 +883,17 @@ func _on_stage_input(event: InputEvent) -> void:
 	var point: Vector2 = event.position * Vector2(stage_view.size) / stage_container.size
 	var origin := camera.project_ray_origin(point)
 	var end := origin + camera.project_ray_normal(point) * 100
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 << 20)
+	var pick_layer := 1 << 20
+	if dice_picker_skill == PICK_RESCUE_DISCARD and rescue_die.visible:
+		pick_layer |= RescueDie.PICK_LAYER
+	var query := PhysicsRayQueryParameters3D.create(origin, end, pick_layer)
 	var excluded: Array[RID] = []
 	for wall in box.get_node("_DiceEnvironment").get_children():
 		if wall is CollisionObject3D: excluded.append(wall.get_rid())
 	query.exclude = excluded
 	var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
 	if hit.has("collider") and hit.collider is DiceDie3D:
-		var index := dice.find(hit.collider)
+		var index := MatchSkills.RESCUE_DIE_INDEX if hit.collider == rescue_die else dice.find(hit.collider)
 		if index >= 0:
 			if dice_picking:
 				_toggle_picker_die(index)
@@ -817,7 +926,10 @@ func _toggle_hold(index: int) -> void:
 
 func _commit_score(p: int, category: int) -> void:
 	if dice_picking or not skills.is_ready() or busy or over or rolls == 0 or values.has(0) or p != player or scores[p][category] != null: return
-	scores[p][category] = YachtRules.score(category, _scoring_values())
+	var scored_values := _scoring_values()
+	if scored_values.is_empty():
+		return
+	scores[p][category] = YachtRules.score(category, scored_values)
 	last_scored[p] = category
 	_play("confirm")
 	if _filled(0) == 12 and _filled(1) == 12:
@@ -888,11 +1000,12 @@ func _update_ui() -> void:
 	_refresh_d4_button()
 	_refresh_blackout()
 	_refresh_biohazard()
+	_refresh_rescue()
 	_refresh_icons()
 	player_label.text = "玩家 %d 的回合" % (player + 1)
 	round_label.text = "第 %d / 12 回合" % min(_filled(player) + 1, 12)
-	var can_score := not dice_picking and not skill_overlay.visible and not busy and not over and rolls > 0 and not values.has(0)
 	var scored_values := _scoring_values()
+	var can_score := not dice_picking and not skill_overlay.visible and not busy and not over and rolls > 0 and not values.has(0) and not scored_values.is_empty()
 	for p in range(2):
 		for i in range(12):
 			var b: Button = score_buttons[p][i]

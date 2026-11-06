@@ -176,7 +176,7 @@ func _handle(id, raw):
 			for s in r.seats:
 				if s != null and s.peer != 0: _send(s.peer,{"type":"sync_metrics","difference_estimate_ms":diff,"rtt_bound_ms":(a.rtt+b.rtt)/2.0})
 		return
-	if kind in ["select_skill","use_d4","use_blackout","use_biohazard","roll","hold","commit_score"]:
+	if kind in ["select_skill","use_d4","use_blackout","use_biohazard","use_rescue","set_rescue_discard","roll","hold","commit_score"]:
 		_game_action(id,d)
 	elif kind == "start":
 		if p.seat != 0: _error(id, "只有房主可以开始。")
@@ -313,7 +313,7 @@ func _game_action(id: int, d: Dictionary):
 	var allowed := ["type","request_id","turn_id"]
 	if d.type == "select_skill": allowed.append("skill_id")
 	if d.type == "use_d4": allowed.append("indices")
-	if d.type == "use_biohazard": allowed.append("index")
+	if d.type in ["use_biohazard", "use_rescue", "set_rescue_discard"]: allowed.append("index")
 	if d.type == "hold": allowed.append_array(["index","held"])
 	if d.type == "commit_score": allowed.append("category")
 	if d.size() != allowed.size() or not _integer(d.get("request_id"),1,9007199254740991) or not _integer(d.get("turn_id"),1,100000):
@@ -338,6 +338,12 @@ func _game_action(id: int, d: Dictionary):
 	if d.type == "use_biohazard" and not _integer(d.get("index"),0,4):
 		_error(id,"母体骰子无效。")
 		return
+	if d.type == "use_rescue" and not _integer(d.get("index"),0,4):
+		_error(id,"要记录的骰子无效。")
+		return
+	if d.type == "set_rescue_discard" and not _integer(d.get("index"),0,5):
+		_error(id,"不计分的骰子无效。")
+		return
 	if d.type == "commit_score" and not _integer(d.get("category"),0,11):
 		_error(id,"计分项目无效。")
 		return
@@ -358,7 +364,7 @@ func _game_action(id: int, d: Dictionary):
 	if error != "":
 		_error(id,error)
 		return
-	if d.type in ["select_skill", "use_blackout"]:
+	if d.type in ["select_skill", "use_blackout", "use_rescue", "set_rescue_discard"]:
 		_broadcast(p.room)
 		_send(id,{"type":"ack","request_id":d.request_id})
 		return

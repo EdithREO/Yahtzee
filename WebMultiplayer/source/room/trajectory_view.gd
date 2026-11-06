@@ -182,6 +182,7 @@ func _apply_ui(ui: Dictionary):
 		match_view_state = {}
 		_render_blackout(false, false, false, [], "")
 		_render_biohazard_button(false, false, false)
+		_render_rescue(false, false, false, false, 0, -1)
 		_apply_biohazard_view({})
 		_clear_victory()
 		over = false
@@ -257,7 +258,19 @@ func _use_biohazard(index: int) -> void:
 func _roll_limit() -> int:
 	return int(match_view_state.get("roll_limit", 3))
 func _scoring_values() -> Array:
-	return MatchSkills.scoring_values(values, match_view_state.get("biohazard", {}))
+	return MatchSkills.scoring_values(values, match_view_state.get("biohazard", {}), int(match_view_state.get("rescue_value", 0)), int(match_view_state.get("rescue_discard", -1)))
+func _refresh_rescue() -> void:
+	var equipped: bool = ui_seat in [0, 1] and match_view_state.get("selected_skills", ["", ""])[ui_seat] == MatchSkills.RESCUE
+	var spent: bool = equipped and match_view_state.get("skill_used", [false, false])[ui_seat]
+	var can_act := ui_can_act and rolls > 0 and not values.has(0)
+	var can_record := equipped and not spent and can_act and _filled(ui_seat) < 11
+	_render_rescue(equipped, spent, can_record, can_act, int(match_view_state.get("rescue_value", 0)), int(match_view_state.get("rescue_discard", -1)))
+func _use_rescue(index: int) -> void:
+	if not rescue_button.disabled:
+		_intent("use_rescue", index)
+func _discard_for_rescue(index: int) -> void:
+	if not rescue_discard_button.disabled:
+		_intent(PICK_RESCUE_DISCARD, index)
 func _roll():
 	if ui_can_act and not dice_picking: _intent("roll")
 func _toggle_hold(index: int):

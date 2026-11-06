@@ -3,11 +3,14 @@ extends RefCounted
 const D4 := "d4"
 const BLACKOUT := "blackout"
 const BIOHAZARD := "biohazard"
+const RESCUE := "rescue"
+const RESCUE_DIE_INDEX := 5
 const BIOHAZARD_INFECTION_LIMIT := 3
 const CATALOG := {
 	D4: {"name": "四面骰？", "description": "自己的回合投掷前，将两颗骰子换成 4、4、5、6 四面骰。\n持续到本回合结束，每局一次。"},
 	BLACKOUT: {"name": "黑幕啊", "description": "自己的回合使用，随机遮住对手下一回合的三颗骰子。\n点数照常计分，每局一次。"},
 	BIOHAZARD: {"name": "生化危机", "description": "点选母体，直接碰到的骰子与它同点，最多感染 3 颗。\n发动回合最多投两次，每局一次。"},
+	RESCUE: {"name": "跨时空救援", "description": "记录一颗骰子的点数，接下来两个自己的回合各获得一颗同点冻结骰。\n计分时手动排除一颗，每局一次。"},
 }
 
 var _selected: Array[String] = ["", ""]
@@ -18,6 +21,10 @@ var _pending_blackout: Array[int] = []
 var _active_blackout: Array[int] = []
 var _biohazard_mother := -1
 var _infected_dice: Array[int] = []
+var _pending_rescue: Array[int] = [0, 0]
+var _rescue_turns_left: Array[int] = [0, 0]
+var rescue_value := 0
+var rescue_discard := -1
 
 func select_skill(seat: int, skill_id: String) -> String:
 	if seat < 0 or seat >= _selected.size():
@@ -107,7 +114,31 @@ func biohazard_snapshot() -> Dictionary:
 func restore_infections(previous: Array) -> void:
 	_infected_dice.assign(previous)
 
-static func scoring_values(values: Array, biohazard: Dictionary) -> Array:
+func can_use_rescue(seat: int) -> bool:
+	return is_ready() and skill_for(seat) == RESCUE and not _used[seat]
+
+func use_rescue(seat: int, value: int) -> String:
+	if not can_use_rescue(seat) or value < 1 or value > 6:
+		return "当前无法记录这个骰子的点数。"
+	_pending_rescue[seat] = value
+	_rescue_turns_left[seat] = 2
+	_used[seat] = true
+	return ""
+
+func discard_for_rescue(index: int) -> String:
+	if rescue_value == 0 or index < 0 or index > RESCUE_DIE_INDEX:
+		return "请选择一颗骰子不参与计分。"
+	rescue_discard = index
+	return ""
+
+static func scoring_values(values: Array, biohazard: Dictionary, extra_value: int = 0, discarded: int = -1) -> Array:
+	if extra_value > 0:
+		if discarded < 0 or discarded > RESCUE_DIE_INDEX:
+			return []
+		var selected := values.duplicate()
+		if discarded != RESCUE_DIE_INDEX:
+			selected[discarded] = extra_value
+		return selected
 	var mother: int = int(biohazard.get("mother", -1))
 	var infected: Array = biohazard.get("infected", [])
 	if mother < 0 or infected.is_empty():
@@ -118,6 +149,11 @@ static func scoring_values(values: Array, biohazard: Dictionary) -> Array:
 	return effective
 
 func begin_turn(seat: int) -> void:
+	rescue_value = _pending_rescue[seat]
+	if rescue_value > 0:
+		_rescue_turns_left[seat] -= 1
+		if _rescue_turns_left[seat] == 0:
+			_pending_rescue[seat] = 0
 	if _blackout_target == seat:
 		_active_blackout.assign(_pending_blackout)
 		_pending_blackout.clear()
@@ -128,3 +164,5 @@ func end_turn() -> void:
 	_active_blackout.clear()
 	_biohazard_mother = -1
 	_infected_dice.clear()
+	rescue_value = 0
+	rescue_discard = -1
