@@ -5,6 +5,7 @@ extends RefCounted
 enum ShapeType {
 	D6,
 	D20,
+	D4,
 }
 
 enum BodyStyle {
@@ -63,6 +64,8 @@ const D20_FACE_SLOTS: Array[StringName] = [
 const DEFAULT_ROUNDED_D6_MESH: Mesh = preload("res://addons/dice_3d/assets/meshes/d6_rounded.tres")
 const _ICO_SHORT := 0.2628655561
 const _ICO_LONG := 0.4253254042
+const _TETRA_RADIUS := 0.48
+const D4_FACE_SLOTS: Array[StringName] = [&"F1", &"F2", &"F3", &"F4"]
 
 
 static func get_face_slots(shape_type: int) -> Array[StringName]:
@@ -71,6 +74,8 @@ static func get_face_slots(shape_type: int) -> Array[StringName]:
 			return D6_FACE_SLOTS.duplicate()
 		ShapeType.D20:
 			return D20_FACE_SLOTS.duplicate()
+		ShapeType.D4:
+			return D4_FACE_SLOTS.duplicate()
 		_:
 			return D6_FACE_SLOTS.duplicate()
 
@@ -87,7 +92,7 @@ static func get_face_normal(shape_type: int, slot: StringName) -> Vector3:
 	match shape_type:
 		ShapeType.D6:
 			return D6_FACE_NORMALS.get(slot, Vector3.UP)
-		ShapeType.D20:
+		ShapeType.D20, ShapeType.D4:
 			return _get_poly_face_normal(shape_type, slot)
 		_:
 			return D6_FACE_NORMALS.get(slot, Vector3.UP)
@@ -97,7 +102,7 @@ static func get_face_center(shape_type: int, slot: StringName) -> Vector3:
 	match shape_type:
 		ShapeType.D6:
 			return get_face_normal(shape_type, slot) * 0.5
-		ShapeType.D20:
+		ShapeType.D20, ShapeType.D4:
 			return _get_poly_face_center(shape_type, slot)
 		_:
 			return get_face_normal(shape_type, slot) * 0.5
@@ -109,6 +114,8 @@ static func get_default_faces(shape_type: int) -> Array[DiceFace3D]:
 			return DiceFace3D.numbered_d6()
 		ShapeType.D20:
 			return DiceFace3D.numbered_faces(20)
+		ShapeType.D4:
+			return DiceFace3D.numbered_faces(4)
 		_:
 			return DiceFace3D.numbered_d6()
 
@@ -119,6 +126,8 @@ static func get_default_idle_slot(shape_type: int) -> StringName:
 			return SLOT_NEG_Z
 		ShapeType.D20:
 			return D20_FACE_SLOTS[0]
+		ShapeType.D4:
+			return D4_FACE_SLOTS[0]
 		_:
 			return SLOT_NEG_Z
 
@@ -131,7 +140,7 @@ static func make_body_mesh(shape_type: int, body_style: int) -> Mesh:
 			var mesh := BoxMesh.new()
 			mesh.size = Vector3.ONE
 			return mesh
-		ShapeType.D20:
+		ShapeType.D20, ShapeType.D4:
 			return _make_poly_mesh(shape_type)
 		_:
 			var mesh := BoxMesh.new()
@@ -146,7 +155,7 @@ static func make_collision_shape(shape_type: int, size: float, smoothing_radius:
 			shape.size = Vector3.ONE * size
 			shape.margin = min(smoothing_radius, size * 0.25)
 			return shape
-		ShapeType.D20:
+		ShapeType.D20, ShapeType.D4:
 			var shape := ConvexPolygonShape3D.new()
 			var points := PackedVector3Array()
 			for vertex in _get_poly_vertices(shape_type):
@@ -161,7 +170,7 @@ static func make_collision_shape(shape_type: int, size: float, smoothing_radius:
 
 
 static func make_face_transform(shape_type: int, slot: StringName, size: float, outward_offset: float) -> Transform3D:
-	if shape_type == ShapeType.D20:
+	if shape_type in [ShapeType.D20, ShapeType.D4]:
 		return _make_poly_face_anchor_transform(shape_type, slot, size, outward_offset)
 	var normal := get_face_normal(shape_type, slot)
 	var center := get_face_center(shape_type, slot) * size
@@ -210,6 +219,13 @@ static func _make_poly_face_anchor_transform(shape_type: int, slot: StringName, 
 
 static func _get_poly_vertices(shape_type: int) -> Array[Vector3]:
 	match shape_type:
+		ShapeType.D4:
+			return [
+				Vector3(1, 1, 1) * _TETRA_RADIUS,
+				Vector3(1, -1, -1) * _TETRA_RADIUS,
+				Vector3(-1, 1, -1) * _TETRA_RADIUS,
+				Vector3(-1, -1, 1) * _TETRA_RADIUS,
+			]
 		ShapeType.D20:
 			return [
 				Vector3(-_ICO_SHORT, _ICO_LONG, 0.0),
@@ -231,6 +247,9 @@ static func _get_poly_vertices(shape_type: int) -> Array[Vector3]:
 
 static func _get_poly_faces(shape_type: int) -> Array[Array]:
 	match shape_type:
+		ShapeType.D4:
+			# Slot i is the face opposite vertex i.
+			return [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]
 		ShapeType.D20:
 			return [
 				[0, 11, 5],
@@ -256,6 +275,16 @@ static func _get_poly_faces(shape_type: int) -> Array[Array]:
 			]
 		_:
 			return []
+
+
+static func get_d4_label_offsets(slot: StringName, size: float) -> Dictionary:
+	var inverse := make_face_transform(ShapeType.D4, slot, size, 0.0).affine_inverse()
+	var vertices := _get_poly_vertices(ShapeType.D4)
+	var offsets := {}
+	for index in _get_oriented_poly_face(ShapeType.D4, slot):
+		var point: Vector3 = inverse * (vertices[index] * size)
+		offsets[D4_FACE_SLOTS[index]] = Vector3(point.x, point.y, 0) * 0.52
+	return offsets
 
 
 static func _get_poly_face_index(shape_type: int, slot: StringName) -> int:

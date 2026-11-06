@@ -176,7 +176,7 @@ func _handle(id, raw):
 			for s in r.seats:
 				if s != null and s.peer != 0: _send(s.peer,{"type":"sync_metrics","difference_estimate_ms":diff,"rtt_bound_ms":(a.rtt+b.rtt)/2.0})
 		return
-	if kind in ["roll","hold","commit_score"]:
+	if kind in ["select_skill","use_d4","use_blackout","use_biohazard","roll","hold","commit_score"]:
 		_game_action(id,d)
 	elif kind == "start":
 		if p.seat != 0: _error(id, "只有房主可以开始。")
@@ -286,12 +286,15 @@ func _remove_room(code: String):
 
 func _ensure_physics(code: String):
 	var r: Dictionary = rooms[code]
-	if r.has("physics"): return
+	if r.has("physics"):
+		r.physics.turn_skills = r.game.skills
+		return
 	var view := SubViewport.new()
 	view.own_world_3d = true
 	view.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	root.add_child(view)
 	var world = load("res://room/physics_world.gd").new()
+	world.turn_skills = r.game.skills
 	view.add_child(world)
 	r.physics = world
 	r.physics_view = view
@@ -308,6 +311,9 @@ func _game_action(id: int, d: Dictionary):
 		_error(id,"游戏尚未开始。")
 		return
 	var allowed := ["type","request_id","turn_id"]
+	if d.type == "select_skill": allowed.append("skill_id")
+	if d.type == "use_d4": allowed.append("indices")
+	if d.type == "use_biohazard": allowed.append("index")
 	if d.type == "hold": allowed.append_array(["index","held"])
 	if d.type == "commit_score": allowed.append("category")
 	if d.size() != allowed.size() or not _integer(d.get("request_id"),1,9007199254740991) or not _integer(d.get("turn_id"),1,100000):
@@ -317,8 +323,20 @@ func _game_action(id: int, d: Dictionary):
 		if not allowed.has(key):
 			_error(id,"不接受客户端点数或额外参数。")
 			return
+	if d.type == "select_skill" and not d.get("skill_id") is String:
+		_error(id,"技能请求无效。")
+		return
+	if d.type == "use_d4":
+		var indices = d.get("indices")
+		if not indices is Array or indices.size() != 2 or not _integer(indices[0],0,4) or not _integer(indices[1],0,4):
+			_error(id,"请选择两颗骰子。")
+			return
+		d.indices = [int(indices[0]),int(indices[1])]
 	if d.type == "hold" and (not _integer(d.get("index"),0,4) or not d.get("held") is bool):
 		_error(id,"保留请求无效。")
+		return
+	if d.type == "use_biohazard" and not _integer(d.get("index"),0,4):
+		_error(id,"母体骰子无效。")
 		return
 	if d.type == "commit_score" and not _integer(d.get("category"),0,11):
 		_error(id,"计分项目无效。")
@@ -335,11 +353,25 @@ func _game_action(id: int, d: Dictionary):
 	if r.has("restart"):
 		_error(id,"请先完成重新开始确认。")
 		return
+	var had_biohazard: bool = d.type == "commit_score" and r.game.skills.biohazard_snapshot().mother >= 0
 	var error: String = r.game.operate(d.type,p.seat,d)
 	if error != "":
 		_error(id,error)
 		return
-	if d.type == "roll":
+	if d.type in ["select_skill", "use_blackout"]:
+		_broadcast(p.room)
+		_send(id,{"type":"ack","request_id":d.request_id})
+		return
+	if d.type in ["use_d4", "use_biohazard"]:
+		if d.type == "use_d4":
+			r.physics.activate_d4(r.game.skills.d4_dice())
+		else:
+			r.physics.dice[int(d.index)].max_contacts_reported = 16
+		r.erase("last_roll")
+		r.erase("latest_state")
+		r.erase("active_roll")
+		_broadcast_board(p.room)
+	elif d.type == "roll":
 		if not r.physics.request_roll(r.game.held):
 			r.game.busy = false
 			r.game.rolls -= 1
@@ -365,6 +397,11 @@ func _game_action(id: int, d: Dictionary):
 		r.erase("active_roll")
 		r.physics.reset_turn()
 		_broadcast_board(p.room)
+	elif d.type == "commit_score" and (r.physics.clear_d4() or had_biohazard):
+		r.erase("last_roll")
+		r.erase("latest_state")
+		r.erase("active_roll")
+		_broadcast_board(p.room)
 	_send(id,{"type":"ack","request_id":d.request_id})
 	_broadcast(p.room)
 
@@ -387,6 +424,9 @@ func _restart_action(id: int,d: Dictionary):
 	var r: Dictionary = rooms[p.room]
 	if not r.has("game") or r.game.busy:
 		_error(id,"请在骰子停止后请求重开。")
+		return
+	if not r.game.skills.is_ready():
+		_error(id,"请等待两位玩家选好技能。")
 		return
 	if not _integer(d.get("request_id"),1,9007199254740991) or not _integer(d.get("turn_id"),1,100000):
 		_error(id,"请求格式无效。")
@@ -413,6 +453,7 @@ func _restart_action(id: int,d: Dictionary):
 			var next_turn: int = r.game.turn_id+1
 			r.game = load("res://room/match_state.gd").new(int(crypto.generate_random_bytes(1)[0])%2)
 			r.game.turn_id = next_turn
+			_ensure_physics(p.room)
 			r.physics.reset_turn()
 			for key in ["last_roll","latest_state","active_roll"]: r.erase(key)
 			_broadcast_board(p.room)

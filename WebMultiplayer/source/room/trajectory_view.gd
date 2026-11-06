@@ -52,12 +52,14 @@ func _process(delta):
 		var b: Dictionary = samples[1] if samples.size()>1 else a
 		var alpha := clampf((playhead-a.server_ms)/maxf(1,b.server_ms-a.server_ms),0,1)
 		for i in range(5):
+			D4Dice.set_active(dice[i], a.dice[i].get("d4", false))
 			var pa: Array = a.dice[i].position
 			var pb: Array = b.dice[i].position
 			var qa: Array = a.dice[i].rotation
 			var qb: Array = b.dice[i].rotation
 			dice[i].global_position = Vector3(pa[0],pa[1],pa[2]).lerp(Vector3(pb[0],pb[1],pb[2]),alpha)
 			dice[i].global_basis = Basis(Quaternion(qa[0],qa[1],qa[2],qa[3]).normalized().slerp(Quaternion(qb[0],qb[1],qb[2],qb[3]).normalized(),alpha))
+		_apply_biohazard_view(a.get("biohazard", {}))
 		if not displayed:
 			displayed = true
 			if not a.get("ended",false): _play("roll")
@@ -99,12 +101,14 @@ func _receive(packet: Dictionary):
 			var p: Array = pose.position
 			var q: Array = pose.rotation
 			var die := dice[int(pose.id)]
+			D4Dice.set_active(die, pose.get("d4", false))
 			die.global_basis = Basis(Quaternion(q[0],q[1],q[2],q[3]).normalized())
 			if packet.get("animate",false) and int(pose.id) == int(packet.index):
 				if hold_tween != null and hold_tween.is_valid(): hold_tween.kill()
 				hold_tween = create_tween()
 				hold_tween.tween_property(die,"global_position",Vector3(p[0],p[1],p[2]),0.3)
 			else: die.global_position = Vector3(p[0],p[1],p[2])
+		_apply_biohazard_view(packet.state.get("biohazard", {}))
 		return
 	if packet.get("type") == "reset":
 		samples.clear()
@@ -156,6 +160,9 @@ func _on_die_hit(_body,_die): pass
 
 var ui_can_act := false
 var ui_seat := -1
+var d4_equipped := false
+var d4_spent := false
+var match_view_state: Dictionary = {}
 var restart_requester := -1
 var last_ui := ""
 func _physics_process(_delta): pass
@@ -170,10 +177,20 @@ func _apply_ui(ui: Dictionary):
 	ui_can_act = ui.can_act
 	var g = ui.game
 	if not g is Dictionary:
+		_render_skills([], -1, false)
+		_render_d4_button(false, false, false)
+		match_view_state = {}
+		_render_blackout(false, false, false, [], "")
+		_render_biohazard_button(false, false, false)
+		_apply_biohazard_view({})
 		_clear_victory()
 		over = false
 		return
 	last_scored = g.get("last_scored",[-1,-1]).duplicate()
+	match_view_state = g
+	_render_skills(g.get("selected_skills", []), ui_seat, ui.get("can_select_skill", false))
+	d4_equipped = ui_seat in [0, 1] and g.get("selected_skills", ["", ""])[ui_seat] == MatchSkills.D4
+	d4_spent = d4_equipped and g.get("skill_used", [false, false])[ui_seat]
 	player = int(g.current_player)
 	rolls = int(g.rolls)
 	held = g.held.duplicate()
@@ -211,12 +228,42 @@ func _apply_ui(ui: Dictionary):
 func _intent(kind: String,index: int = -1):
 	if kind in ["restart_request","restart_reply"]: _play("select")
 	if OS.has_feature("web"): JavaScriptBridge.eval("window.parent.yachtUiAction("+JSON.stringify(kind)+","+str(index)+")",true)
+func _choose_skill(skill_id: String) -> void:
+	if OS.has_feature("web"):
+		JavaScriptBridge.eval("window.parent.yachtUiAction('select_skill',"+JSON.stringify(skill_id)+")",true)
+func _refresh_d4_button() -> void:
+	_render_d4_button(d4_equipped, d4_spent, d4_equipped and not d4_spent and ui_can_act and rolls < 3)
+func _use_d4(indices: Array) -> void:
+	if OS.has_feature("web") and not d4_button.disabled:
+		JavaScriptBridge.eval("window.parent.yachtUiAction('use_d4',"+JSON.stringify(indices)+")",true)
+func _refresh_blackout() -> void:
+	var affected: Array = match_view_state.get("blackout_dice", [])
+	var equipped: bool = ui_seat in [0, 1] and match_view_state.get("selected_skills", ["", ""])[ui_seat] == MatchSkills.BLACKOUT
+	var spent: bool = equipped and match_view_state.get("skill_used", [false, false])[ui_seat]
+	var warned: bool = ui_seat in [0, 1] and (match_view_state.get("blackout_target", -1) == ui_seat or (player == ui_seat and not affected.is_empty()))
+	_render_blackout(equipped, spent, equipped and not spent and ui_can_act and scores[1 - ui_seat].has(null), affected, "你被黑幕了" if warned else "")
+func _use_blackout() -> void:
+	if not blackout_button.disabled:
+		_intent("use_blackout")
+func _refresh_biohazard() -> void:
+	var equipped: bool = ui_seat in [0, 1] and match_view_state.get("selected_skills", ["", ""])[ui_seat] == MatchSkills.BIOHAZARD
+	var spent: bool = equipped and match_view_state.get("skill_used", [false, false])[ui_seat]
+	_render_biohazard_button(equipped, spent, equipped and not spent and ui_can_act and rolls < 2)
+	if samples.is_empty():
+		_apply_biohazard_view(match_view_state.get("biohazard", {}))
+func _use_biohazard(index: int) -> void:
+	if not biohazard_button.disabled:
+		_intent("use_biohazard", index)
+func _roll_limit() -> int:
+	return int(match_view_state.get("roll_limit", 3))
+func _scoring_values() -> Array:
+	return MatchSkills.scoring_values(values, match_view_state.get("biohazard", {}))
 func _roll():
-	if ui_can_act: _intent("roll")
+	if ui_can_act and not dice_picking: _intent("roll")
 func _toggle_hold(index: int):
-	if ui_can_act and rolls>0 and not busy: _intent("hold",index)
+	if ui_can_act and not dice_picking and rolls>0 and values[index] != 0 and not busy: _intent("hold",index)
 func _commit_score(p: int,category: int):
-	if ui_can_act and p == ui_seat: _intent("commit_score",category)
+	if ui_can_act and not dice_picking and p == ui_seat: _intent("commit_score",category)
 func _on_stage_input(event: InputEvent):
 	if ui_can_act: super._on_stage_input(event)
 func _show_rules(): super._show_rules()

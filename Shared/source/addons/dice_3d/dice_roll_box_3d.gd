@@ -1007,7 +1007,7 @@ func _get_top_face_info(die: DiceDie3D) -> Dictionary:
 
 	for slot in die.get_face_slots():
 		var die_basis := die.global_transform.basis if die.is_inside_tree() else die.transform.basis
-		var world_normal := (die_basis * die.get_local_face_normal(slot)).normalized()
+		var world_normal := (die_basis * die.get_local_result_direction(slot)).normalized()
 		var score := world_normal.dot(up)
 		if score > best_dot:
 			best_dot = score

@@ -17,6 +17,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File F:\GA\YachtDuel\Shared\tools
 
 两边各自也有 `build_game.bat`。导出后得到最新 Windows EXE 与 `WebMultiplayer\public\viewer` 网页包/gzip；代理提供 `WebMultiplayer\public`。启动服务器前自动同步工程，并检查运行进程源码版本；更新服务端后应先结束对局、停止旧服务再启动。
 
+## 扩展技能
+
+每局开始时两位玩家各确认一项技能。双方确认后开始投骰，重新开局时重新选择。
+
+- **四面骰？** 每局可用一次。自己回合中任意一次投掷前，点击「四面骰？」并在骰盘上点选两颗骰子。选中时显示红色描边，点「确定（2/2）」后才换成正四面体。本回合内它们的结果只有 4、4、5、6。已保留的选中骰子会取消保留，替换后须再投一次才能计分。
+- **黑幕啊** 每局可用一次。自己回合使用后，对手会看到「你被黑幕了」。对手的下一回合有三颗随机骰子变黑并隐藏点数，即使换成四面骰也保持黑色。计分表照常显示。
+- **生化危机** 每局可用一次。在自己的回合投完第二次之前，点选一颗骰子作为母体。母体最多感染直接碰到的 3 颗其他骰子，它们计分时都跟随母体的最新点数。被感染的骰子不会继续传播。发动回合最多投两次，回合结束清除感染。
+
+在 `Shared/source/match_skills.gd` 的 `CATALOG` 中用唯一且稳定的 ID 注册技能名称和描述。两版从同一目录生成选项，`select_skill(seat, skill_id)` 校验并锁定选择。新增效果时，在对应的游戏操作中读取 `skills.skill_for(seat)`。单机操作在 `Shared/source/game.gd`，联机操作由 `WebMultiplayer/source/room/match_state.gd` 和服务器处理。联机客户端只发送所选 ID，服务器按已认证的座位记录，并通过状态快照同步给两端。
+
 ## 音效署名
 
 计分确认音使用 Christopherderp 的 “Videogame Menu BUTTON CLICK”，CC0 1.0。来源：https://freesound.org/people/Christopherderp/sounds/342200/ 。用户提供的 WAV 原样保存为 `Shared\source\audio\score-confirm.wav`。完整说明为同目录 `ATTRIBUTION.md`，构建时自动放入两个资源包并复制到 Windows 与网页发布目录；网页可访问 `/ATTRIBUTION.md`。

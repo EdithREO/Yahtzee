@@ -1,5 +1,10 @@
 extends Node3D
 
+const D4Dice = preload("res://room/d4_dice.gd")
+const MatchSkills = preload("res://match_skills.gd")
+var turn_skills: MatchSkills
+var biohazard_before_roll: Array = []
+
 var stack_assist = preload("res://room/dice_stack_assist.gd").new()
 
 signal completed(result: Dictionary)
@@ -62,6 +67,7 @@ func _ready():
 func request_roll(hold_mask: Array = []) -> bool:
 	if busy: return false
 	_cancel_roll()
+	biohazard_before_roll = _biohazard_state().get("infected", [])
 	held = hold_mask.duplicate() if hold_mask.size() == 5 else [false,false,false,false,false]
 	before_roll.clear()
 	for die in dice: before_roll.append(die.global_transform)
@@ -102,6 +108,8 @@ func _launch():
 
 func _on_hit(body: Node, _index: int):
 	if busy: contacts["dice" if body is DiceDie3D else "environment"] += 1
+	if busy and turn_skills != null and body is DiceDie3D:
+		turn_skills.infect_contact(_index, dice.find(body))
 	if not busy or dice[_index].linear_velocity.length() < 1.8: return
 	var now := Time.get_ticks_msec()
 	if now - audio_last_hit_ms < 170: return
@@ -124,7 +132,7 @@ func _publish_settled_result():
 			return
 		var p := die.global_position
 		var q := die.global_basis.get_rotation_quaternion()
-		output.append({"id":i,"value":result.value,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w],"linear_speed":die.linear_velocity.length(),"angular_speed":die.angular_velocity.length()})
+		output.append({"id":i,"value":result.value,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w],"d4":die.die_shape == DiceDie3D.DieShape.D4,"linear_speed":die.linear_velocity.length(),"angular_speed":die.angular_velocity.length()})
 	_finish({"ok":true,"dice":output})
 
 func _roll_failed():
@@ -139,20 +147,45 @@ func reset_turn():
 	_cancel_roll()
 	held = [false,false,false,false,false]
 	for i in range(5):
+		dice[i].max_contacts_reported = 4
+		D4Dice.set_active(dice[i], false)
 		dice[i].linear_velocity = Vector3.ZERO
 		dice[i].angular_velocity = Vector3.ZERO
 		dice[i].global_transform = Transform3D(_random_basis(dice[i]),Vector3(i-2,0.41,0))
 	last_result = {}
+
+func activate_d4(indices: Array[int]) -> void:
+	for index in indices:
+		held[index] = false
+		hold_parked.erase(index)
+		D4Dice.prepare_for_roll(dice[index], index)
+
+func clear_d4() -> bool:
+	var changed := false
+	for die in dice:
+		if die.die_shape != DiceDie3D.DieShape.D4:
+			continue
+		D4Dice.set_active(die, false)
+		die.global_basis = _random_basis(die)
+		die.position.y = D4Dice.resting_height(die)
+		changed = true
+	return changed
 
 func board_state(turn: int) -> Dictionary:
 	var poses := []
 	for i in range(5):
 		var p := dice[i].global_position
 		var q := dice[i].global_basis.get_rotation_quaternion()
-		poses.append({"id":i,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w]})
-	return {"turn_id":turn,"dice":poses}
+		poses.append({"id":i,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w],"d4":dice[i].die_shape == DiceDie3D.DieShape.D4})
+	return {"turn_id":turn,"dice":poses,"biohazard":_biohazard_state()}
+
+func _biohazard_state() -> Dictionary:
+	return turn_skills.biohazard_snapshot() if turn_skills != null else {}
 
 func _finish(result: Dictionary):
+	if not result.ok and turn_skills != null:
+		turn_skills.restore_infections(biohazard_before_roll)
+	result["biohazard"] = _biohazard_state()
 	result["roll_id"] = roll_id
 	result["stack_assist_impulses_total"] = stack_assist.impulse_events
 	result["duration"] = total_elapsed
@@ -219,7 +252,7 @@ func _setup_physics():
 func _random_basis(die: DiceDie3D) -> Basis:
 	var slots := die.get_face_slots()
 	var slot: StringName = slots[randi_range(0, slots.size() - 1)]
-	return Basis(Vector3.UP, randi_range(0, 3) * PI * 0.5) * Basis(Quaternion(die.get_local_face_normal(slot), Vector3.UP))
+	return Basis(Vector3.UP, randi_range(0, 3) * PI * 0.5) * Basis(Quaternion(die.get_local_result_direction(slot), Vector3.UP))
 
 func _cancel_roll() -> void:
 	stack_assist.reset()
@@ -257,8 +290,8 @@ func _physics_process(delta: float) -> void:
 		for i in range(5):
 			var p := dice[i].global_position
 			var q := dice[i].global_basis.get_rotation_quaternion()
-			poses.append({"id":i,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w]})
-		sampled.emit({"roll_id":roll_id,"seq":sequence,"server_ms":Time.get_ticks_msec(),"dice":poses,"audio_hit_id":audio_hit_id})
+			poses.append({"id":i,"position":[p.x,p.y,p.z],"rotation":[q.x,q.y,q.z,q.w],"d4":dice[i].die_shape == DiceDie3D.DieShape.D4})
+		sampled.emit({"roll_id":roll_id,"seq":sequence,"server_ms":Time.get_ticks_msec(),"dice":poses,"audio_hit_id":audio_hit_id,"biohazard":_biohazard_state()})
 	for j in range(entering.size()-1, -1, -1):
 		var incoming := entering[j]
 		if incoming.position.x > -2.05:

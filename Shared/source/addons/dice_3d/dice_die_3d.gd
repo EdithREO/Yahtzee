@@ -21,6 +21,7 @@ const _FACE_ROOT_NAME := "_DiceFaces"
 const _GENERATED_LABEL_FONT_SIZE := 96
 const _GENERATED_LABEL_HEIGHT_RATIO := 0.44
 const _GENERATED_D20_LABEL_HEIGHT_RATIO := 0.3
+const _GENERATED_D4_LABEL_HEIGHT_RATIO := 0.50
 const _GENERATED_LABEL_OUTLINE_SIZE := 8
 const _GENERATED_D20_LABEL_OUTLINE_SIZE := 5
 const DEFAULT_ROUNDED_BODY_MESH: Mesh = DiceDieShape3D.DEFAULT_ROUNDED_D6_MESH
@@ -28,6 +29,7 @@ const DEFAULT_ROUNDED_BODY_MESH: Mesh = DiceDieShape3D.DEFAULT_ROUNDED_D6_MESH
 enum DieShape {
 	D6,
 	D20,
+	D4,
 }
 
 enum BodyShape {
@@ -38,9 +40,9 @@ enum BodyShape {
 @export_category("Dice Die")
 @export_group("Shape")
 ## Polyhedral die shape used for body geometry, face slots, face anchors, and result normals.
-@export_enum("D6", "D20") var die_shape: int = DieShape.D6:
+@export_enum("D6", "D20", "D4") var die_shape: int = DieShape.D6:
 	set(value):
-		die_shape = clampi(value, DieShape.D6, DieShape.D20)
+		die_shape = clampi(value, DieShape.D6, DieShape.D4)
 		_fill_missing_faces()
 		if is_inside_tree():
 			_rebuild_die()
@@ -145,6 +147,11 @@ var _rolling := false
 var _settle_elapsed := 0.0
 var wait_for_flat_result := false
 var _face_root: Node3D
+var _points_hidden := false
+static var _blackout_material: StandardMaterial3D
+static var _biohazard_material: StandardMaterial3D
+enum BiohazardRole { NONE, MOTHER, INFECTED }
+var _biohazard_role := BiohazardRole.NONE
 
 
 static func get_face_normal(slot: StringName) -> Vector3:
@@ -225,6 +232,30 @@ func has_face_slot(slot: StringName) -> bool:
 
 func get_local_face_normal(slot: StringName) -> Vector3:
 	return DiceDieShape3D.get_face_normal(die_shape, slot)
+
+
+func get_local_result_direction(slot: StringName) -> Vector3:
+	var normal := get_local_face_normal(slot)
+	# For a tetrahedron, the supporting face points down and its opposite tip is the result.
+	return -normal if die_shape == DieShape.D4 else normal
+
+
+func set_points_hidden(hidden: bool) -> void:
+	if hidden == _points_hidden:
+		return
+	_points_hidden = hidden
+	_apply_visual_material()
+	if _face_root != null:
+		_face_root.visible = not hidden
+
+
+func set_biohazard_role(role: BiohazardRole) -> void:
+	if role == _biohazard_role:
+		return
+	_biohazard_role = role
+	_apply_visual_material()
+	if is_inside_tree():
+		_rebuild_face_visuals()
 
 
 func get_default_idle_slot() -> StringName:
@@ -379,6 +410,7 @@ func _ensure_face_root() -> void:
 		_face_root = Node3D.new()
 		_face_root.name = _FACE_ROOT_NAME
 		add_child(_face_root)
+	_face_root.visible = not _points_hidden
 
 
 func _rebuild_face_visuals() -> void:
@@ -395,7 +427,17 @@ func _rebuild_face_visuals() -> void:
 		anchor.name = "Face_%s" % str(slot).replace("+", "Pos").replace("-", "Neg")
 		anchor.transform = DiceDieShape3D.make_face_transform(die_shape, slot, edge_length, face_decoration_offset)
 		_face_root.add_child(anchor)
-		_add_face_content(anchor, face)
+		if die_shape == DieShape.D4:
+			var offsets := DiceDieShape3D.get_d4_label_offsets(slot, edge_length)
+			for corner in offsets:
+				_add_generated_face_label(anchor, get_face(corner), offsets[corner])
+		elif _biohazard_role != BiohazardRole.NONE:
+			var path := "res://pips/biohazard.svg"
+			if _biohazard_role == BiohazardRole.MOTHER:
+				path = "res://pips/biohazard-%d.svg" % face.value
+			_add_face_content(anchor, DiceFace3D.new_face(face.value, face.face_id, load(path)))
+		else:
+			_add_face_content(anchor, face)
 
 
 func _add_face_content(anchor: Node3D, face: DiceFace3D) -> void:
@@ -423,7 +465,7 @@ func _add_face_content(anchor: Node3D, face: DiceFace3D) -> void:
 		_add_generated_face_label(anchor, face)
 
 
-func _add_generated_face_label(anchor: Node3D, face: DiceFace3D) -> void:
+func _add_generated_face_label(anchor: Node3D, face: DiceFace3D, offset := Vector3.ZERO) -> void:
 	var label := Label3D.new()
 	label.text = str(face.value)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -433,10 +475,15 @@ func _add_generated_face_label(anchor: Node3D, face: DiceFace3D) -> void:
 	label.modulate = _get_generated_label_color()
 	label.outline_modulate = _get_generated_label_outline_color()
 	label.outline_size = _get_generated_label_outline_size()
+	label.position = offset
+	if offset != Vector3.ZERO:
+		label.rotation.z = atan2(-offset.x, offset.y)
 	anchor.add_child(label)
 
 
 func _get_generated_label_height_ratio() -> float:
+	if die_shape == DieShape.D4:
+		return _GENERATED_D4_LABEL_HEIGHT_RATIO
 	if die_shape == DieShape.D20:
 		return _GENERATED_D20_LABEL_HEIGHT_RATIO
 	return _GENERATED_LABEL_HEIGHT_RATIO
@@ -461,6 +508,18 @@ func _get_generated_label_outline_color() -> Color:
 
 
 func _make_base_material() -> Material:
+	if _points_hidden:
+		if _blackout_material == null:
+			_blackout_material = StandardMaterial3D.new()
+			_blackout_material.albedo_color = Color.BLACK
+			_blackout_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		return _blackout_material
+	if _biohazard_role != BiohazardRole.NONE:
+		if _biohazard_material == null:
+			_biohazard_material = StandardMaterial3D.new()
+			_biohazard_material.albedo_color = Color("57be70")
+			_biohazard_material.roughness = 0.68
+		return _biohazard_material
 	if body_material != null:
 		return body_material
 

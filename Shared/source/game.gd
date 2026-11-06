@@ -3,7 +3,27 @@ extends Control
 var stack_assist = preload("res://room/dice_stack_assist.gd").new()
 
 const CAT := YachtRules.CATEGORIES
+const MatchSkills = preload("res://match_skills.gd")
+const D4Dice = preload("res://room/d4_dice.gd")
 const HOLD_X := 4.1
+var skills := MatchSkills.new()
+var skill_overlay: ColorRect
+var skill_prompt: Label
+var skill_summary: Label
+var skill_buttons: Array[Button] = []
+var d4_button: Button
+var dice_picker_actions: HBoxContainer
+var dice_picker_confirm: Button
+var dice_picking := false
+var dice_picker_selected: Array[int] = []
+var dice_picker_outline: StandardMaterial3D
+var dice_picker_skill := ""
+var biohazard_button: Button
+var biohazard_view: Dictionary = {}
+var biohazard_before_roll: Array = []
+var blackout_button: Button
+var blackout_notice: Label
+var blackout_indices: Array = []
 var dice: Array[DiceDie3D] = []
 var held := [false, false, false, false, false]
 var values := [0, 0, 0, 0, 0]
@@ -183,8 +203,20 @@ func _setup_ui() -> void:
 	player_label = _label("玩家 1 的回合",27,Color("244937"))
 	player_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title.add_child(player_label)
+	_setup_dice_picker(title)
+	blackout_button = _button("黑幕啊")
+	blackout_button.custom_minimum_size.y = 32
+	blackout_button.pressed.connect(_use_blackout)
+	blackout_button.hide()
+	title.add_child(blackout_button)
 	round_label = _label("第 1 / 12 回合",16,Color("355746"))
 	title.add_child(round_label)
+	skill_summary = _label("",16,Color("355746"))
+	skill_summary.hide()
+	right.add_child(skill_summary)
+	blackout_notice = _label("", 18, Color("852b28"))
+	blackout_notice.hide()
+	right.add_child(blackout_notice)
 	var strip := Control.new()
 	strip.custom_minimum_size.y = 96
 	right.add_child(strip)
@@ -240,6 +272,242 @@ func _setup_ui() -> void:
 	result_label = _label("")
 	result_label.hide()
 	add_child(result_label)
+	_setup_skill_selection()
+
+func _setup_skill_selection() -> void:
+	skill_overlay = ColorRect.new()
+	skill_overlay.color = Color(0, 0, 0, 0.45)
+	skill_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	skill_overlay.z_index = 100
+	add_child(skill_overlay)
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	skill_overlay.add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size.x = 480
+	panel.add_theme_stylebox_override("panel", _flat(Color("345849"), 12, Color("efdc9d"), 2))
+	center.add_child(panel)
+	var padding := MarginContainer.new()
+	for side in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		padding.add_theme_constant_override(side, 24)
+	panel.add_child(padding)
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 12)
+	padding.add_child(content)
+	skill_prompt = _label("", 24)
+	content.add_child(skill_prompt)
+	for skill_id in MatchSkills.CATALOG:
+		var skill: Dictionary = MatchSkills.CATALOG[skill_id]
+		var button := _button("%s\n%s" % [skill.name, skill.description])
+		button.custom_minimum_size.y = 68
+		button.focus_mode = Control.FOCUS_ALL
+		button.pressed.connect(_choose_skill.bind(skill_id))
+		content.add_child(button)
+		skill_buttons.append(button)
+	skill_overlay.hide()
+
+func _render_skills(selected: Array, seat: int, can_select: bool) -> void:
+	skill_overlay.visible = selected.has("")
+	skill_summary.visible = selected.size() == 2
+	if not skill_summary.visible:
+		return
+	var names := PackedStringArray()
+	for skill_id in selected:
+		names.append(MatchSkills.CATALOG.get(skill_id, {}).get("name", "待选择"))
+	skill_summary.text = "玩家 1：%s　·　玩家 2：%s" % [names[0], names[1]]
+	if not skill_overlay.visible:
+		return
+	var needs_choice: bool = seat >= 0 and seat < selected.size() and selected[seat] == ""
+	skill_prompt.text = "玩家 %d · 请选择一项技能" % (seat + 1) if needs_choice else "等待另一位玩家选择技能"
+	for button in skill_buttons:
+		button.visible = needs_choice
+		button.disabled = not can_select
+
+func _choose_skill(skill_id: String) -> void:
+	var seat := 0 if skills.skill_for(0).is_empty() else 1
+	if not skills.select_skill(seat, skill_id).is_empty():
+		return
+	_render_skills(skills.snapshot(), 1, true)
+	_update_ui()
+
+func _setup_dice_picker(title: HBoxContainer) -> void:
+	var controls := VBoxContainer.new()
+	title.add_child(controls)
+	d4_button = _button("四面骰？")
+	d4_button.custom_minimum_size.y = 32
+	d4_button.tooltip_text = "在骰盘上点选两颗骰子"
+	d4_button.pressed.connect(_open_dice_picker.bind(MatchSkills.D4))
+	d4_button.hide()
+	controls.add_child(d4_button)
+	biohazard_button = _button("生化危机")
+	biohazard_button.custom_minimum_size.y = 32
+	biohazard_button.tooltip_text = "点选一颗母体骰；发动回合最多投两次"
+	biohazard_button.pressed.connect(_open_dice_picker.bind(MatchSkills.BIOHAZARD))
+	biohazard_button.hide()
+	controls.add_child(biohazard_button)
+	dice_picker_actions = HBoxContainer.new()
+	dice_picker_actions.add_theme_constant_override("separation", 6)
+	dice_picker_actions.hide()
+	controls.add_child(dice_picker_actions)
+	dice_picker_confirm = _button("确定（0/2）")
+	dice_picker_confirm.custom_minimum_size = Vector2(108, 32)
+	dice_picker_confirm.pressed.connect(_confirm_dice_selection)
+	dice_picker_actions.add_child(dice_picker_confirm)
+	var cancel := _button("取消")
+	cancel.custom_minimum_size = Vector2(60, 32)
+	cancel.pressed.connect(_cancel_dice_selection)
+	dice_picker_actions.add_child(cancel)
+	dice_picker_outline = StandardMaterial3D.new()
+	dice_picker_outline.albedo_color = Color("e43131")
+	dice_picker_outline.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dice_picker_outline.cull_mode = BaseMaterial3D.CULL_FRONT
+
+func _open_dice_picker(skill: String) -> void:
+	var button := d4_button if skill == MatchSkills.D4 else biohazard_button
+	if button.disabled or dice_picking:
+		return
+	dice_picking = true
+	dice_picker_skill = skill
+	dice_picker_confirm.text = "确定（0/%d）" % _dice_picker_limit()
+	dice_picker_confirm.disabled = true
+	dice_picker_actions.show()
+	_update_ui()
+
+func _dice_picker_limit() -> int:
+	return 2 if dice_picker_skill == MatchSkills.D4 else 1
+
+func _toggle_picker_die(index: int) -> void:
+	if dice_picker_selected.has(index):
+		dice_picker_selected.erase(index)
+		_set_picker_outline(dice[index], false)
+	elif dice_picker_selected.size() < _dice_picker_limit():
+		dice_picker_selected.append(index)
+		_set_picker_outline(dice[index], true)
+	dice_picker_confirm.text = "确定（%d/%d）" % [dice_picker_selected.size(), _dice_picker_limit()]
+	dice_picker_confirm.disabled = dice_picker_selected.size() != _dice_picker_limit()
+	_refresh_stage()
+
+func _set_picker_outline(die: DiceDie3D, visible_outline: bool) -> void:
+	var visual := die.get_node("_DiceVisual") as MeshInstance3D
+	var outline := visual.get_node_or_null("SkillSelectionOutline") as MeshInstance3D
+	if outline == null:
+		if not visible_outline:
+			return
+		outline = MeshInstance3D.new()
+		outline.name = "SkillSelectionOutline"
+		outline.mesh = visual.mesh
+		outline.material_override = dice_picker_outline
+		outline.scale = Vector3.ONE * 1.09
+		outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		visual.add_child(outline)
+	outline.visible = visible_outline
+
+func _end_dice_selection() -> void:
+	if not dice_picking:
+		return
+	for index in dice_picker_selected:
+		_set_picker_outline(dice[index], false)
+	dice_picker_selected.clear()
+	dice_picking = false
+	dice_picker_skill = ""
+	dice_picker_actions.hide()
+	_refresh_stage()
+
+func _cancel_dice_selection() -> void:
+	_end_dice_selection()
+	_update_ui()
+
+func _confirm_dice_selection() -> void:
+	if not dice_picking or dice_picker_selected.size() != _dice_picker_limit():
+		return
+	var skill := dice_picker_skill
+	var indices := dice_picker_selected.duplicate()
+	_end_dice_selection()
+	if skill == MatchSkills.D4:
+		_use_d4(indices)
+	else:
+		_use_biohazard(indices[0])
+	_update_ui()
+
+func _render_d4_button(equipped: bool, spent: bool, available: bool) -> void:
+	d4_button.visible = equipped
+	d4_button.disabled = not available
+	d4_button.text = "四面骰？ · 已使用" if spent else "四面骰？"
+	if not available and dice_picker_skill == MatchSkills.D4:
+		_end_dice_selection()
+
+func _refresh_d4_button() -> void:
+	_render_d4_button(skills.skill_for(player) == MatchSkills.D4, skills.used_snapshot()[player], not busy and not over and skills.can_use_d4(player, rolls))
+
+func _use_d4(indices: Array) -> void:
+	if busy or over or not skills.use_d4(player, rolls, indices).is_empty():
+		return
+	for index in indices:
+		held[index] = false
+		values[index] = 0
+		D4Dice.prepare_for_roll(dice[index], index)
+		parked[index] = dice[index].global_transform
+	_update_ui()
+
+func _refresh_blackout() -> void:
+	var affected := skills.active_blackout()
+	var notified := skills.blackout_target()
+	if notified == -1 and not affected.is_empty():
+		notified = player
+	var message := "玩家 %d：你被黑幕了" % (notified + 1) if notified >= 0 else ""
+	var available: bool = not busy and not over and scores[1 - player].has(null) and skills.can_use_blackout(player)
+	_render_blackout(skills.skill_for(player) == MatchSkills.BLACKOUT, skills.used_snapshot()[player], available, affected, message)
+
+func _render_blackout(equipped: bool, spent: bool, available: bool, affected: Array, message: String) -> void:
+	blackout_button.visible = equipped
+	blackout_button.disabled = not available
+	blackout_button.text = "黑幕啊 · 已使用" if spent else "黑幕啊"
+	blackout_notice.text = message
+	blackout_notice.visible = not message.is_empty()
+	blackout_indices = affected
+	for i in range(dice.size()):
+		dice[i].set_points_hidden(blackout_indices.has(i))
+
+func _use_blackout() -> void:
+	if busy or over or not scores[1 - player].has(null) or not skills.use_blackout(player).is_empty():
+		return
+	_update_ui()
+
+func _render_biohazard_button(equipped: bool, spent: bool, available: bool) -> void:
+	biohazard_button.visible = equipped
+	biohazard_button.disabled = not available
+	biohazard_button.text = "生化危机 · 已使用" if spent else "生化危机"
+	if not available and dice_picker_skill == MatchSkills.BIOHAZARD:
+		_end_dice_selection()
+
+func _refresh_biohazard() -> void:
+	var equipped := skills.skill_for(player) == MatchSkills.BIOHAZARD
+	_render_biohazard_button(equipped, skills.used_snapshot()[player], not busy and not over and skills.can_use_biohazard(player, rolls))
+	_apply_biohazard_view(skills.biohazard_snapshot())
+
+func _apply_biohazard_view(state: Dictionary) -> void:
+	if biohazard_view == state:
+		return
+	biohazard_view = state
+	var mother := int(state.get("mother", -1))
+	var infected: Array = state.get("infected", [])
+	for i in range(dice.size()):
+		var role := DiceDie3D.BiohazardRole.NONE
+		if i == mother: role = DiceDie3D.BiohazardRole.MOTHER
+		elif infected.has(i): role = DiceDie3D.BiohazardRole.INFECTED
+		dice[i].set_biohazard_role(role)
+
+func _use_biohazard(index: int) -> void:
+	if busy or over or not skills.use_biohazard(player, rolls, index).is_empty():
+		return
+	dice[index].max_contacts_reported = 16
+	_update_ui()
+
+func _roll_limit() -> int:
+	return skills.roll_limit()
+
+func _scoring_values() -> Array:
+	return MatchSkills.scoring_values(values, biohazard_view)
 
 func _add_totals_row(parent: VBoxContainer, text: String, out: Array[Label], strong: bool = false) -> void:
 	var row := HBoxContainer.new()
@@ -389,17 +657,24 @@ func _new_game() -> void:
 		for i in range(12): scores[p].append(null)
 	player = 0
 	over = false
+	skills = MatchSkills.new()
+	_render_skills(skills.snapshot(), 0, true)
 	_begin_turn()
 
 func _begin_turn() -> void:
+	_end_dice_selection()
 	generation += 1
 	_cancel_roll()
 	busy = false
 	rolls = 0
 	values = [0, 0, 0, 0, 0]
 	held = [false, false, false, false, false]
+	skills.end_turn()
+	skills.begin_turn(player)
 	for i in range(5):
 		var die := dice[i]
+		die.max_contacts_reported = 4
+		D4Dice.set_active(die, false)
 		die.freeze = true
 		die.linear_velocity = Vector3.ZERO
 		die.angular_velocity = Vector3.ZERO
@@ -410,7 +685,7 @@ func _begin_turn() -> void:
 func _random_basis(die: DiceDie3D) -> Basis:
 	var slots := die.get_face_slots()
 	var slot: StringName = slots[randi_range(0, slots.size() - 1)]
-	return Basis(Vector3.UP, randi_range(0, 3) * PI * 0.5) * Basis(Quaternion(die.get_local_face_normal(slot), Vector3.UP))
+	return Basis(Vector3.UP, randi_range(0, 3) * PI * 0.5) * Basis(Quaternion(die.get_local_result_direction(slot), Vector3.UP))
 
 func _cancel_roll() -> void:
 	stack_assist.reset()
@@ -432,8 +707,9 @@ func _cancel_roll() -> void:
 	slow.clear()
 
 func _roll() -> void:
-	if busy or over or rolls >= 3 or (rolls > 0 and held.count(true) == 5): return
+	if dice_picking or not skills.is_ready() or busy or over or rolls >= _roll_limit() or (rolls > 0 and held.count(true) == 5): return
 	_play("roll")
+	biohazard_before_roll = skills.biohazard_snapshot().infected
 	busy = true
 	rolls += 1
 	physics_elapsed = 0
@@ -484,19 +760,20 @@ func _on_all_settled(_results: Dictionary) -> void:
 
 func _roll_failed() -> void:
 	_cancel_roll()
+	skills.restore_infections(biohazard_before_roll)
 	busy = false
 	rolls = max(0, rolls - 1)
 	values = [0, 0, 0, 0, 0]
 	held = [false, false, false, false, false]
 	for i in range(5):
-		dice[i].global_transform = Transform3D(_random_basis(dice[i]), Vector3((i - 2) * 1.0, 0.41, 0))
+		dice[i].global_transform = Transform3D(_random_basis(dice[i]), Vector3(i - 2, D4Dice.resting_height(dice[i]), 0))
 		parked[i] = dice[i].global_transform
 	_update_ui()
 	hint.text = "有骰子未能落稳，请重新投掷。"
 
 func _on_stage_input(event: InputEvent) -> void:
 	if not event is InputEventMouseButton or event.button_index != MOUSE_BUTTON_LEFT or not event.pressed: return
-	if busy or over or rolls == 0: return
+	if busy or over or (rolls == 0 and not dice_picking): return
 	var point: Vector2 = event.position * Vector2(stage_view.size) / stage_container.size
 	var origin := camera.project_ray_origin(point)
 	var end := origin + camera.project_ray_normal(point) * 100
@@ -508,10 +785,14 @@ func _on_stage_input(event: InputEvent) -> void:
 	var hit := world.get_world_3d().direct_space_state.intersect_ray(query)
 	if hit.has("collider") and hit.collider is DiceDie3D:
 		var index := dice.find(hit.collider)
-		if index >= 0: _toggle_hold(index)
+		if index >= 0:
+			if dice_picking:
+				_toggle_picker_die(index)
+			else:
+				_toggle_hold(index)
 
 func _toggle_hold(index: int) -> void:
-	if busy or over or rolls == 0: return
+	if dice_picking or not skills.is_ready() or busy or over or rolls == 0 or values[index] == 0: return
 	_set_dice_contacts(false)
 	_play("select")
 	busy = true
@@ -535,11 +816,12 @@ func _toggle_hold(index: int) -> void:
 	_update_ui()
 
 func _commit_score(p: int, category: int) -> void:
-	if busy or over or rolls == 0 or p != player or scores[p][category] != null: return
-	scores[p][category] = YachtRules.score(category, values)
+	if dice_picking or not skills.is_ready() or busy or over or rolls == 0 or values.has(0) or p != player or scores[p][category] != null: return
+	scores[p][category] = YachtRules.score(category, _scoring_values())
 	last_scored[p] = category
 	_play("confirm")
 	if _filled(0) == 12 and _filled(1) == 12:
+		_reset_d4_dice()
 		over = true
 		_update_ui()
 		var a := YachtRules.total(scores[0])
@@ -551,6 +833,14 @@ func _commit_score(p: int, category: int) -> void:
 	player = 1 - player
 	_begin_turn()
 
+func _reset_d4_dice() -> void:
+	for index in skills.d4_dice():
+		var die := dice[index]
+		D4Dice.set_active(die, false)
+		die.global_basis = _random_basis(die)
+		die.position.y = D4Dice.resting_height(die)
+	skills.end_turn()
+
 func _filled(p: int) -> int:
 	var n := 0
 	for score in scores[p]:
@@ -561,15 +851,31 @@ func _on_icon_pressed(slot: int) -> void:
 	_toggle_hold(icon_order[slot])
 
 func _refresh_icons() -> void:
-	icon_order.sort_custom(func(a, b): return values[a] < values[b] or (values[a] == values[b] and a < b))
+	icon_order.sort_custom(func(a, b):
+		var hidden_a := blackout_indices.has(a)
+		var hidden_b := blackout_indices.has(b)
+		if hidden_a != hidden_b: return not hidden_a
+		if hidden_a: return a < b
+		return values[a] < values[b] or (values[a] == values[b] and a < b)
+	)
 	for slot in range(5):
 		var i: int = icon_order[slot]
 		var button := icons[slot]
-		button.disabled = busy or over or values[i] == 0
-		button.text = "—" if values[i] == 0 else ""
-		button.icon = load("res://pips/%d.svg" % values[i]) if values[i] > 0 else null
+		var concealed := blackout_indices.has(i)
+		var infected: bool = biohazard_view.get("infected", []).has(i)
+		var mother: bool = biohazard_view.get("mother", -1) == i
+		button.disabled = dice_picking or busy or over or values[i] == 0
+		button.text = "—" if values[i] == 0 and not concealed and not infected else ""
+		button.icon = null
+		if not concealed:
+			if infected:
+				button.icon = preload("res://pips/biohazard.svg")
+			elif values[i] > 0:
+				button.icon = load(("res://pips/biohazard-%d.svg" if mother else "res://pips/%d.svg") % values[i])
 		button.tooltip_text = ("取消保留" if held[i] else "保留") + " · 骰子 %d" % (i + 1)
-		var style := _flat(Color("f5d78b") if held[i] else Color("fffbed"), 10, Color("906627") if held[i] else Color("b9c8b4"), 3)
+		var fill := Color.BLACK if concealed else (Color("f5d78b") if held[i] else Color("fffbed"))
+		if not concealed and (mother or infected): fill = Color("57be70")
+		var style := _flat(fill, 10, Color("906627") if held[i] else Color("b9c8b4"), 3)
 		for state in ["normal","disabled","hover","pressed"]:
 			button.add_theme_stylebox_override(state, style)
 
@@ -579,10 +885,14 @@ func _refresh_stage() -> void:
 func _update_ui() -> void:
 	if scores[0].size() != 12: return
 	_refresh_stage()
+	_refresh_d4_button()
+	_refresh_blackout()
+	_refresh_biohazard()
 	_refresh_icons()
 	player_label.text = "玩家 %d 的回合" % (player + 1)
 	round_label.text = "第 %d / 12 回合" % min(_filled(player) + 1, 12)
-	var can_score := not busy and not over and rolls > 0 and not values.has(0)
+	var can_score := not dice_picking and not skill_overlay.visible and not busy and not over and rolls > 0 and not values.has(0)
+	var scored_values := _scoring_values()
 	for p in range(2):
 		for i in range(12):
 			var b: Button = score_buttons[p][i]
@@ -591,7 +901,7 @@ func _update_ui() -> void:
 			if committed != null:
 				b.text = str(committed)
 			elif can_score and p == player:
-				b.text = str(YachtRules.score(i, values))
+				b.text = str(YachtRules.score(i, scored_values))
 			else:
 				b.text = "—"
 			_style_score_cell(b,committed != null,committed == null and can_score and p == player,last_scored[p] == i)
@@ -599,10 +909,11 @@ func _update_ui() -> void:
 		bonus_labels[p].text = "+35" if YachtRules.subtotal(scores[p]) >= 63 else "—"
 		total_labels[p].text = str(YachtRules.total(scores[p]))
 	for i in range(hold_buttons.size()):
-		hold_buttons[i].disabled = busy or over or rolls == 0
-		hold_buttons[i].text = ("✓ " if held[i] else "骰 ") + (str(values[i]) if values[i] > 0 else str(i + 1))
-	roll_button.disabled = busy or over or rolls >= 3 or (rolls > 0 and held.count(true) == 5)
-	roll_button.text = "投 掷\n剩余 %d 次" % (3 - rolls)
+		hold_buttons[i].disabled = dice_picking or busy or over or rolls == 0
+		var points := "?" if blackout_indices.has(i) else str(values[i] if values[i] > 0 else i + 1)
+		hold_buttons[i].text = ("✓ " if held[i] else "骰 ") + points
+	roll_button.disabled = dice_picking or skill_overlay.visible or busy or over or rolls >= _roll_limit() or (rolls > 0 and held.count(true) == 5)
+	roll_button.text = "投 掷\n剩余 %d 次" % (_roll_limit() - rolls)
 	if over: return
 	if busy:
 		hint.text = "骰子运动中……"
@@ -610,7 +921,10 @@ func _update_ui() -> void:
 		hint.text = "点击投掷开始本回合。"
 	else:
 		hint.text = "点击骰子或下方按钮保留；点击左侧分数确认。"
-	result_label.text = "本次点数：" + "  ".join(PackedStringArray(values.map(func(v): return "—" if v == 0 else str(v))))
+	var shown := PackedStringArray()
+	for i in range(values.size()):
+		shown.append("?" if blackout_indices.has(i) else ("☣" if biohazard_view.get("infected", []).has(i) else ("—" if values[i] == 0 else str(values[i]))))
+	result_label.text = "本次点数：" + "  ".join(shown)
 
 func _physics_process(delta: float) -> void:
 	if not busy or over or rolls == 0: return
@@ -676,8 +990,10 @@ func _on_die_settled(result: DiceRollResult) -> void:
 		die.sleeping = false
 	paused.clear()
 
-func _on_die_hit(_body: Node, die: DiceDie3D) -> void:
+func _on_die_hit(body: Node, die: DiceDie3D) -> void:
 	if not busy or rolls == 0: return
+	if body is DiceDie3D and skills.infect_contact(dice.find(die), dice.find(body)):
+		_update_ui.call_deferred()
 	var now := Time.get_ticks_msec()
 	if now - last_hit < 170 or die.linear_velocity.length() < 1.8: return
 	last_hit = now

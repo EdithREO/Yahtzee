@@ -12,8 +12,24 @@ let game = null, pending = false, requestSequence = Number(sessionStorage.getIte
 let packets = [], offset = 0, rtt = 0, bestRtt = Infinity, currentRoll = '', rolling = false, requestAt = 0, startAt = 0, latestFinal = null, serverMetrics = '', syncMetrics = '';
 window.yachtViewerReady = false;
 window.yachtUiAction=(type,index=-1)=>{
+ if(type==='select_skill'){
+  if(canSelectSkill()) sendGameRequest(type,{skill_id:index});
+  return;
+ }
+ if(type==='use_d4'){
+  if(game?.selected_skills?.[seat]==='d4' && !game.skill_used[seat] && game.rolls<3) action(type,{indices:index});
+  return;
+ }
+ if(type==='use_blackout'){
+  if(game?.selected_skills?.[seat]==='blackout' && !game.skill_used[seat]) action(type);
+  return;
+ }
+ if(type==='use_biohazard'){
+  if(game?.selected_skills?.[seat]==='biohazard' && !game.skill_used[seat] && game.rolls<2) action(type,{index});
+  return;
+ }
  if(type==='restart_request'||type==='restart_reply'){
-  if(!game||game.busy||pending)return;
+  if(!game?.skills_ready||game.busy||pending)return;
   requestSequence++;sessionStorage.setItem('yacht_request_seq',String(requestSequence));pending=true;
   send({type,request_id:requestSequence,turn_id:game.turn_id,...(type==='restart_reply'?{accept:index===1}:{})});return;
  }
@@ -24,12 +40,12 @@ window.yachtUiAction=(type,index=-1)=>{
 const rafTimes=[]; let lastRaf=0;
 function measureRaf(now) { if(lastRaf) {rafTimes.push(now-lastRaf);if(rafTimes.length>240)rafTimes.shift();} lastRaf=now;requestAnimationFrame(measureRaf); }
 requestAnimationFrame(measureRaf);
-window.yachtConsume = () => { const batch = packets; packets = []; return {packets:batch, now_ms:performance.now()+offset, buffer_ms:PLAYBACK_BUFFER_MS,ui:{score_sound_event:scoreSoundEvent,game,seat,can_act:canAct(),rolling,pending,error:$('error').textContent,restart:state?.restart??null}}; };
+window.yachtConsume = () => { const batch = packets; packets = []; return {packets:batch, now_ms:performance.now()+offset, buffer_ms:PLAYBACK_BUFFER_MS,ui:{score_sound_event:scoreSoundEvent,game,seat,can_act:canAct(),can_select_skill:canSelectSkill(),rolling,pending,error:$('error').textContent,restart:state?.restart??null}}; };
 window.yachtReport = d => {
   if (d.final || d.failed) rolling=false;
-  if (d.final) $('viewer').dataset.result=JSON.stringify(d);
+  if (d.final) $('viewer').dataset.result=JSON.stringify({...d,values:d.values.map((value,index)=>diePoints(index,value))});
   if (d.first_display && startAt) $('network').textContent = (requestAt ? '请求→开始显示 ' + (performance.now()-requestAt).toFixed(0) : '收到开始→显示 '+(performance.now()-startAt).toFixed(0)) + ' ms';
-  if (d.final) { $('values').textContent = '服务端点数：' + d.values.join(' · '); if (d.face_mismatches) $('error').textContent = '姿态点数核对失败！'; }
+  if (d.final) { $('values').textContent = '服务端点数：' + d.values.map((value,index)=>diePoints(index,value)).join(' · '); if (d.face_mismatches) $('error').textContent = '姿态点数核对失败！'; }
   if (d.failed) $('error').textContent = '服务端投掷失败，请重试。';
   updateControls();
   if (d.fps !== undefined) {
@@ -90,19 +106,34 @@ $('roll').onclick = () => {requestAt=performance.now();action('roll');};
 $('commit').onclick = () => {if($('category').value!=='') action('commit_score',{category:Number($('category').value)});};
 $('category').onchange=updateControls;
 for(let i=0;i<5;i++){const b=document.createElement('button');b.id='hold'+i;b.onclick=()=>action('hold',{index:i,held:!game.held[i]});$('holds').appendChild(b);}
-function canAct(){return !!(connectionReady && game && !game.over && !game.busy && !rolling && !pending && game.current_player===seat && state?.restart==null && state?.online.every(Boolean) && ws?.readyState===WebSocket.OPEN && window.yachtViewerReady);}
-function updateControls(){
- const active=canAct(); $('roll').disabled=!active || game?.rolls>=3 || game?.held.every(Boolean);
- $('roll').textContent=!window.yachtViewerReady?'正在加载骰盘…':(game?.busy||rolling)?'投掷中…':game?.current_player===seat?'投骰':'观看对方投骰';
- for(let i=0;i<5;i++) $('hold'+i).disabled=!active || !game?.rolls;
- $('commit').disabled=!active || !game?.rolls || $('category').value===''; $('category').disabled=!active || !game?.rolls;
+function canSelectSkill(){
+ return !!(connectionReady && !pending && game?.selected_skills?.[seat]==='' && state?.online.every(Boolean) && ws?.readyState===WebSocket.OPEN);
 }
-function action(type,extra={}){if(!canAct())return;pending=true;requestSequence++;sessionStorage.setItem('yacht_request_seq',String(requestSequence));send({type,request_id:requestSequence,turn_id:game.turn_id,...extra});updateControls();}
+function canAct(){return !!(connectionReady && game?.skills_ready && !game.over && !game.busy && !rolling && !pending && game.current_player===seat && state?.restart==null && state?.online.every(Boolean) && ws?.readyState===WebSocket.OPEN && window.yachtViewerReady);}
+function updateControls(){
+ const active=canAct(); $('roll').disabled=!active || game?.rolls>=(game?.roll_limit??3) || game?.held.every(Boolean);
+ $('roll').textContent=!window.yachtViewerReady?'正在加载骰盘…':(game?.busy||rolling)?'投掷中…':game?.current_player===seat?'投骰':'观看对方投骰';
+ for(let i=0;i<5;i++) $('hold'+i).disabled=!active || !game?.values[i];
+ const canScore=active && game.rolls>0 && !game.values.includes(0);
+ $('commit').disabled=!canScore || $('category').value===''; $('category').disabled=!canScore;
+}
+function sendGameRequest(type,extra){
+ pending=true;
+ requestSequence++;
+ sessionStorage.setItem('yacht_request_seq',String(requestSequence));
+ send({type,request_id:requestSequence,turn_id:game.turn_id,...extra});
+ updateControls();
+}
+function action(type,extra={}){if(canAct()) sendGameRequest(type,extra);}
+function diePoints(index,value){
+ if(game?.blackout_dice?.includes(index)) return '?';
+ return game?.biohazard?.infected.includes(index) ? '☣' : value;
+}
 function renderGame(){
  if(!game){updateControls();return;}
  if(displayedTurn!==game.turn_id){displayedTurn=game.turn_id;$('category').value='';$('sync').textContent='';$('values').textContent='等待本回合投掷';}
- $('turn').textContent=game.over?(game.winner===null||game.winner===-1?'对局结束 · 平局':'对局结束 · 玩家 '+(game.winner?'B':'A')+' 获胜'):`你是玩家 ${seat?'B':'A'} · 当前玩家 ${game.current_player?'B':'A'} · 已投 ${game.rolls}/3 次 · 回合 ${game.turn_id}`;
- for(let i=0;i<5;i++){const b=$('hold'+i);b.textContent=`骰 ${i+1}：${game.values[i]||'—'}${game.held[i]?' · 已保留':''}`;b.setAttribute('aria-pressed',String(game.held[i]));}
+ $('turn').textContent=game.over?(game.winner===null||game.winner===-1?'对局结束 · 平局':'对局结束 · 玩家 '+(game.winner?'B':'A')+' 获胜'):`你是玩家 ${seat?'B':'A'} · 当前玩家 ${game.current_player?'B':'A'} · 已投 ${game.rolls}/${game.roll_limit??3} 次 · 回合 ${game.turn_id}`;
+ for(let i=0;i<5;i++){const b=$('hold'+i);b.textContent=`骰 ${i+1}：${diePoints(i,game.values[i]||'—')}${game.held[i]?' · 已保留':''}`;b.setAttribute('aria-pressed',String(game.held[i]));}
  const selected=$('category').value;$('category').replaceChildren(new Option('请选择',''));
  const tbody=$('scores').querySelector('tbody');tbody.replaceChildren();
  game.categories.forEach((name,i)=>{const tr=document.createElement('tr');for(const v of [name,game.scores[0][i]??'—',game.scores[1][i]??'—']){const td=document.createElement('td');td.textContent=v;tr.appendChild(td);}tbody.appendChild(tr);if(game.scores[seat][i]===null){const value=game.previews[i];$('category').add(new Option(name+(value===null?'':` · ${value} 分`),String(i)));}});

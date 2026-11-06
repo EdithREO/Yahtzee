@@ -54,7 +54,7 @@ $versionFile = Join-Path $publicDir ('server-version-'+$hash+'.json')
 function Get-ServerFingerprint {
     $digest = [Security.Cryptography.SHA256]::Create()
     try {
-        $parts = foreach ($relative in @('room\server.gd','room\physics_world.gd','room\match_state.gd','room\dice_stack_assist.gd','rules.gd','room\proxy.js','room\start.ps1')) {
+        $parts = foreach ($relative in @('room\server.gd','room\physics_world.gd','room\match_state.gd','room\dice_stack_assist.gd','room\d4_dice.gd','rules.gd','match_skills.gd','room\proxy.js','room\start.ps1','addons\dice_3d\dice_die_3d.gd','addons\dice_3d\dice_die_shape_3d.gd','addons\dice_3d\dice_roll_box_3d.gd')) {
             $file = Join-Path $project $relative
             '{0}:{1}' -f $relative,[BitConverter]::ToString($digest.ComputeHash([IO.File]::ReadAllBytes($file))).Replace('-','')
         }

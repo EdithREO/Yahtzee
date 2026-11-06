@@ -9,6 +9,8 @@ func _run():
 	assert(view.victory_player.stream.get_length() == 5.0)
 	if web:
 		var m = load("res://room/match_state.gd").new(0)
+		assert(m.operate("select_skill",0,{"turn_id":1,"skill_id":"d4"}) == "")
+		assert(m.operate("select_skill",1,{"turn_id":1,"skill_id":"blackout"}) == "")
 		assert(m.operate("commit_score",0,{"turn_id":1,"category":1}) != "")
 		assert(m.score_revision == 0)
 		m.rolls = 1
@@ -41,6 +43,8 @@ func _run():
 		assert(restored.last_scored == [1,0] and not restored.confirm_player.playing)
 		restored.queue_free()
 	else:
+		view._choose_skill("d4")
+		view._choose_skill("blackout")
 		view.rolls = 1
 		view.values = [1,1,1,1,1]
 		view._update_ui()
